@@ -1,0 +1,163 @@
+---
+# =============================================================================
+# Playbook: set_ntp_policy_tags.yml
+#
+# Looks up an NTP policy by name, then applies one or more key/value tags to
+# it via a PATCH request.  Existing tags on the policy are replaced by the
+# supplied list.
+#
+# Authentication – set the following environment variables before running:
+#   export INTERSIGHT_API_KEY_ID="<your-key-id>"
+#   export INTERSIGHT_API_PRIVATE_KEY="<path-to-your-pem-key-file>"
+#
+# Usage (interactive):
+#   ansible-playbook -i inventory set_ntp_policy_tags.yml
+#
+# Usage (non-interactive, extra-vars):
+#   ansible-playbook -i inventory set_ntp_policy_tags.yml \
+#     -e "ntp_policy_name=MyNTPPolicy" \
+#     -e 'policy_tags=[{"Key":"Env","Value":"Prod"},{"Key":"Owner","Value":"NetOps"}]'
+# =============================================================================
+
+- name: Set tags on an Intersight NTP policy
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    api_key_id: "{{ lookup('env', 'INTERSIGHT_API_KEY_ID') }}"
+    api_private_key: "{{ lookup('env', 'INTERSIGHT_API_PRIVATE_KEY') }}"
+    api_uri: "https://intersight.com/api/v1"
+    validate_certs: true
+    # Override policy_tags via extra-vars for non-interactive use.
+    # Each entry must have a "Key" and a "Value" field.
+    policy_tags: "{{ tags_input | default([]) }}"
+
+  vars_prompt:
+    - name: ntp_policy_name
+      prompt: "Enter the NTP policy name (exact match)"
+      private: false
+
+    - name: tags_raw
+      prompt: >-
+        Enter tags as comma-separated Key=Value pairs
+        (e.g. Env=Prod,Owner=NetOps)
+      private: false
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # 1. Parse tags from the prompt string into a list of dicts
+    #    (skipped when policy_tags was already provided via extra-vars)
+    # -------------------------------------------------------------------------
+    - name: Build tags list from prompt input
+      ansible.builtin.set_fact:
+        policy_tags: >-
+          {{
+            tags_raw.split(',')
+            | map('trim')
+            | select('search', '=')
+            | map('regex_replace', '^([^=]+)=(.*)$', '{"Key": "\1", "Value": "\2"}')
+            | map('from_json')
+            | list
+          }}
+      when: policy_tags | length == 0 and tags_raw is defined and tags_raw | length > 0
+
+    - name: Fail if no tags were provided
+      ansible.builtin.fail:
+        msg: >-
+          No tags were provided. Supply tags via the prompt (Key=Value,...) or
+          via extra-vars: -e 'policy_tags=[{"Key":"K","Value":"V"}]'
+      when: policy_tags | length == 0
+
+    # -------------------------------------------------------------------------
+    # 2. Look up the NTP policy by name
+    # -------------------------------------------------------------------------
+    - name: Look up NTP policy by name
+      cisco.intersight.intersight_rest_api:
+        api_key_id: "{{ api_key_id }}"
+        api_private_key: "{{ api_private_key }}"
+        api_uri: "{{ api_uri }}"
+        validate_certs: "{{ validate_certs }}"
+        resource_path: /ntp/Policies
+        query_params:
+          $filter: "Name eq '{{ ntp_policy_name }}'"
+        return_list: true
+      register: ntp_lookup
+
+    - name: Fail if NTP policy not found
+      ansible.builtin.fail:
+        msg: >-
+          NTP policy '{{ ntp_policy_name }}' was not found in Intersight.
+          Verify the name and try again.
+      when: (ntp_lookup.api_response | default([])) | length == 0
+
+    - name: Warn if multiple NTP policies matched the name
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: {{ ntp_lookup.api_response | length }} policies matched
+          '{{ ntp_policy_name }}'. Using the first result
+          (Moid: {{ ntp_lookup.api_response[0].Moid }}).
+      when: ntp_lookup.api_response | length > 1
+
+    - name: Store NTP policy Moid
+      ansible.builtin.set_fact:
+        ntp_policy_moid: "{{ ntp_lookup.api_response[0].Moid }}"
+
+    - name: Display resolved NTP policy
+      ansible.builtin.debug:
+        msg: "Resolved NTP policy '{{ ntp_policy_name }}' → Moid: {{ ntp_policy_moid }}"
+
+    # -------------------------------------------------------------------------
+    # 3. Read existing tags so we can merge rather than replace
+    # -------------------------------------------------------------------------
+    - name: Fetch current NTP policy details
+      cisco.intersight.intersight_rest_api:
+        api_key_id: "{{ api_key_id }}"
+        api_private_key: "{{ api_private_key }}"
+        api_uri: "{{ api_uri }}"
+        validate_certs: "{{ validate_certs }}"
+        resource_path: "/ntp/Policies/{{ ntp_policy_moid }}"
+        return_list: false
+      register: ntp_current
+
+    - name: Build merged tag list
+      # Start with existing tags, then overlay/add any new ones.
+      # If a supplied Key already exists, the new Value wins.
+      ansible.builtin.set_fact:
+        merged_tags: >-
+          {{
+            (ntp_current.api_response.Tags | default([]))
+            | rejectattr('Key', 'in', policy_tags | map(attribute='Key') | list)
+            | list
+            + policy_tags
+          }}
+
+    - name: Display existing and merged tags
+      ansible.builtin.debug:
+        msg:
+          - "Existing tags : {{ ntp_current.api_response.Tags | default([]) }}"
+          - "New/updated   : {{ policy_tags }}"
+          - "Merged result : {{ merged_tags }}"
+
+    # -------------------------------------------------------------------------
+    # 4. Apply the merged tags via PATCH
+    # -------------------------------------------------------------------------
+    - name: Set merged tags on NTP policy
+      cisco.intersight.intersight_rest_api:
+        api_key_id: "{{ api_key_id }}"
+        api_private_key: "{{ api_private_key }}"
+        api_uri: "{{ api_uri }}"
+        validate_certs: "{{ validate_certs }}"
+        resource_path: "/ntp/Policies/{{ ntp_policy_moid }}"
+        api_body:
+          Tags: "{{ merged_tags }}"
+        state: present
+      register: patch_result
+
+    - name: Confirm tags applied
+      ansible.builtin.debug:
+        msg: >-
+          Successfully applied {{ policy_tags | length }} tag(s) to NTP policy
+          '{{ ntp_policy_name }}' (Moid: {{ ntp_policy_moid }}).
+          Total tags on policy: {{ merged_tags | length }}.

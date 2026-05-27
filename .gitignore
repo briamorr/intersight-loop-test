@@ -1,0 +1,42 @@
+# Intersight credential files
+APIKeyID.txt
+APIKeyId.txt
+Secretkey.txt
+SecretKey.txt
+*.pem
+*.key
+
+# Ansible artifacts
+*.retry
+ansible.log
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# macOS
+.DS_Store
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Misc
+*.log
+*.tmp
+*.bak

@@ -35,7 +35,16 @@
   connection: local
   gather_facts: false
 
+  module_defaults:
+    cisco.intersight.intersight_rest_api:
+      api_key_id: "{{ api_key_id }}"
+      api_private_key: "{{ api_private_key }}"
+      api_uri: "https://intersight.com/api/v1"
+      validate_certs: true
+
   vars:
+    api_key_id: "{{ lookup('env', 'INTERSIGHT_API_KEY_ID') }}"
+    api_private_key: "{{ lookup('env', 'INTERSIGHT_API_PRIVATE_KEY') }}"
     # Parse YAML input into a list of dicts
     parsed_policies: "{{ policy_tags_yaml | from_yaml | default([]) }}"
     # Track results across all policy updates

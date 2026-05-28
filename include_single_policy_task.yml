@@ -14,10 +14,6 @@
 
 - name: Resolve NTP policy by name
   cisco.intersight.intersight_rest_api:
-    api_key_id: "{{ api_key_id }}"
-    api_private_key: "{{ api_private_key }}"
-    api_uri: "https://intersight.com/api/v1"
-    validate_certs: true
     resource_path: /ntp/Policies
     query_params:
       $filter: "Name eq '{{ ntp_policy_name }}'"
@@ -35,10 +31,6 @@
 
 - name: Fetch current policy details to read existing tags
   cisco.intersight.intersight_rest_api:
-    api_key_id: "{{ lookup('env', 'INTERSIGHT_API_KEY_ID') }}"
-    api_private_key: "{{ lookup('env', 'INTERSIGHT_API_PRIVATE_KEY') }}"
-    api_uri: "https://intersight.com/api/v1"
-    validate_certs: true
     resource_path: "/ntp/Policies/{{ ntp_policy_moid }}"
     return_list: false
   register: ntp_current
@@ -65,10 +57,6 @@
 
 - name: Apply merged tags to policy
   cisco.intersight.intersight_rest_api:
-    api_key_id: "{{ lookup('env', 'INTERSIGHT_API_KEY_ID') }}"
-    api_private_key: "{{ lookup('env', 'INTERSIGHT_API_PRIVATE_KEY') }}"
-    api_uri: "https://intersight.com/api/v1"
-    validate_certs: true
     resource_path: "/ntp/Policies/{{ ntp_policy_moid }}"
     api_body:
       Tags: "{{ merged_tags }}"

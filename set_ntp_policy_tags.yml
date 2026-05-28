@@ -29,11 +29,16 @@
   connection: local
   gather_facts: false
 
+  module_defaults:
+    cisco.intersight.intersight_rest_api:
+      api_key_id: "{{ api_key_id }}"
+      api_private_key: "{{ api_private_key }}"
+      api_uri: "https://intersight.com/api/v1"
+      validate_certs: true
+
   vars:
     api_key_id: "{{ lookup('env', 'INTERSIGHT_API_KEY_ID') }}"
     api_private_key: "{{ lookup('env', 'INTERSIGHT_API_PRIVATE_KEY') }}"
-    api_uri: "https://intersight.com/api/v1"
-    validate_certs: true
 
   pre_tasks:
     - name: Validate required variables
@@ -53,10 +58,6 @@
     # -------------------------------------------------------------------------
     - name: Look up NTP policy by name
       cisco.intersight.intersight_rest_api:
-        api_key_id: "{{ api_key_id }}"
-        api_private_key: "{{ api_private_key }}"
-        api_uri: "{{ api_uri }}"
-        validate_certs: "{{ validate_certs }}"
         resource_path: /ntp/Policies
         query_params:
           $filter: "Name eq '{{ ntp_policy_name }}'"
@@ -115,10 +116,6 @@
     # -------------------------------------------------------------------------
     - name: Fetch current NTP policy details
       cisco.intersight.intersight_rest_api:
-        api_key_id: "{{ api_key_id }}"
-        api_private_key: "{{ api_private_key }}"
-        api_uri: "{{ api_uri }}"
-        validate_certs: "{{ validate_certs }}"
         resource_path: "/ntp/Policies/{{ ntp_policy_moid }}"
         return_list: false
       register: ntp_current
@@ -147,10 +144,6 @@
     # -------------------------------------------------------------------------
     - name: Set merged tags on NTP policy
       cisco.intersight.intersight_rest_api:
-        api_key_id: "{{ api_key_id }}"
-        api_private_key: "{{ api_private_key }}"
-        api_uri: "{{ api_uri }}"
-        validate_certs: "{{ validate_certs }}"
         resource_path: "/ntp/Policies/{{ ntp_policy_moid }}"
         api_body:
           Tags: "{{ merged_tags }}"

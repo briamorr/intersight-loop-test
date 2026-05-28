@@ -1,0 +1,150 @@
+---
+# =============================================================================
+# Playbook: set_ntp_policy_tags_multi.yml
+#
+# Wrapper for applying tags to multiple Intersight NTP policies (with different
+# tags per policy). Parses a YAML input, validates structure, and calls
+# set_ntp_policy_tags.yml for each policy entry.
+#
+# Expected variables (from AAP survey or -e):
+#   policy_tags_yaml: |
+#     - policy_name: PolicyA
+#       tags:
+#         - Key: Env
+#           Value: Prod
+#         - Key: Owner
+#           Value: NetOps
+#     - policy_name: PolicyB
+#       tags:
+#         - Key: Env
+#           Value: Dev
+#
+# Authentication – set the following environment variables before running:
+#   export INTERSIGHT_API_KEY_ID="<your-key-id>"
+#   export INTERSIGHT_API_PRIVATE_KEY="<path-to-your-pem-key-file>"
+#
+# Usage (CLI):
+#   ansible-playbook -i inventory set_ntp_policy_tags_multi.yml \
+#     -e 'policy_tags_yaml=...'
+#
+# Usage (AAP): Pass policy_tags_yaml from job template survey (Textarea field)
+# =============================================================================
+
+- name: Apply tags to multiple Intersight NTP policies
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # Parse YAML input into a list of dicts
+    parsed_policies: "{{ policy_tags_yaml | from_yaml | default([]) }}"
+    # Track results across all policy updates
+    policy_results: []
+    failed_policies: []
+    successful_policies: []
+
+  pre_tasks:
+    - name: Validate policy_tags_yaml was provided
+      ansible.builtin.assert:
+        that:
+          - policy_tags_yaml is defined
+          - policy_tags_yaml | length > 0
+        fail_msg: "policy_tags_yaml is required. Provide YAML with policy_name and tags list."
+
+    - name: Parse and validate YAML structure
+      block:
+        - name: Parse YAML input
+          ansible.builtin.set_fact:
+            parsed_policies: "{{ policy_tags_yaml | from_yaml }}"
+
+        - name: Validate each policy entry
+          ansible.builtin.assert:
+            that:
+              - item.policy_name is defined and item.policy_name | length > 0
+              - item.tags is defined and item.tags | length > 0
+              - item.tags[0].Key is defined
+              - item.tags[0].Value is defined
+            fail_msg: >-
+              Invalid policy entry: {{ item }}
+              each must have: policy_name (string) and tags (list of {Key, Value})
+          loop: "{{ parsed_policies }}"
+          loop_control:
+            label: "{{ item.policy_name | default('UNKNOWN') }}"
+
+      rescue:
+        - name: Fail with YAML parsing error
+          ansible.builtin.fail:
+            msg: >-
+              YAML parsing or validation failed: {{ ansible_failed_result.msg }}
+              
+              Expected format:
+              - policy_name: PolicyA
+                tags:
+                  - Key: Env
+                    Value: Prod
+                  - Key: Owner
+                    Value: NetOps
+
+  tasks:
+
+    - name: Display parsed policies
+      ansible.builtin.debug:
+        msg: "Processing {{ parsed_policies | length }} policy/tag entry(ies)…"
+
+    # -------------------------------------------------------------------------
+    # Loop: Apply tags to each policy
+    # -------------------------------------------------------------------------
+    - name: Apply tags to each NTP policy
+      ansible.builtin.include_tasks: include_single_policy_task.yml
+      vars:
+        ntp_policy_name: "{{ item.policy_name }}"
+        policy_tags: "{{ item.tags }}"
+      loop: "{{ parsed_policies }}"
+      loop_control:
+        label: "{{ item.policy_name }}"
+      register: loop_result
+      ignore_errors: true
+
+    - name: Extract failed policies from loop
+      ansible.builtin.set_fact:
+        failed_policies: "{{ failed_policies + [item.item.policy_name] }}"
+      loop: "{{ loop_result.results }}"
+      when: item is failed
+      loop_control:
+        label: "{{ item.item.policy_name }}"
+
+    # -------------------------------------------------------------------------
+    # Summary
+    # -------------------------------------------------------------------------
+    - name: Build final counts
+      ansible.builtin.set_fact:
+        summary_total: "{{ parsed_policies | length }}"
+        summary_failed: "{{ failed_policies | length }}"
+        summary_successful: "{{ summary_total | int - summary_failed | int }}"
+
+    - name: Display summary
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "===== Tag Application Summary ====="
+          - "Total policies:    {{ summary_total }}"
+          - "Successful:        {{ summary_successful }}"
+          - "Failed:            {{ summary_failed }}"
+          - ""
+      run_once: true
+
+    - name: Show failed policies
+      ansible.builtin.debug:
+        msg: "✗ {{ item }}"
+      loop: "{{ failed_policies }}"
+      when: failed_policies | length > 0
+
+    - name: Fail overall if any policy failed
+      ansible.builtin.fail:
+        msg: "{{ failed_policies | length }} policy tag application(s) failed."
+      when: failed_policies | length > 0
+
+    - name: Success message
+      ansible.builtin.debug:
+        msg: "✓ All {{ summary_total }} policy tag applications completed successfully!"
+      when: failed_policies | length == 0

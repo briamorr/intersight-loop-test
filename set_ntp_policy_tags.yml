@@ -2,24 +2,29 @@
 # =============================================================================
 # Playbook: set_ntp_policy_tags.yml
 #
-# Looks up an NTP policy by name, then applies one or more key/value tags to
-# it via a PATCH request.  Existing tags on the policy are replaced by the
-# supplied list.
+# Applies one or more key/value tags to a single NTP policy by name,
+# merging with any existing tags on that policy.
+#
+# Expected variables (must be set before calling, e.g., via -e or include_tasks):
+#   ntp_policy_name: "MyNTPPolicy"         # Exact name of the policy
+#   policy_tags: [                         # List of tags to add/update
+#     {"Key":"Env","Value":"Prod"},
+#     {"Key":"Owner","Value":"NetOps"}
+#   ]
 #
 # Authentication – set the following environment variables before running:
 #   export INTERSIGHT_API_KEY_ID="<your-key-id>"
 #   export INTERSIGHT_API_PRIVATE_KEY="<path-to-your-pem-key-file>"
 #
-# Usage (interactive):
-#   ansible-playbook -i inventory set_ntp_policy_tags.yml
-#
-# Usage (non-interactive, extra-vars):
+# Standalone Usage (CLI):
 #   ansible-playbook -i inventory set_ntp_policy_tags.yml \
 #     -e "ntp_policy_name=MyNTPPolicy" \
-#     -e 'policy_tags=[{"Key":"Env","Value":"Prod"},{"Key":"Owner","Value":"NetOps"}]'
+#     -e 'policy_tags=[{"Key":"Env","Value":"Prod"}]'
+#
+# Used by: set_ntp_policy_tags_multi.yml (wrapper for multiple policies)
 # =============================================================================
 
-- name: Set tags on an Intersight NTP policy
+- name: Apply tags to a single Intersight NTP policy
   hosts: localhost
   connection: local
   gather_facts: false
@@ -29,49 +34,22 @@
     api_private_key: "{{ lookup('env', 'INTERSIGHT_API_PRIVATE_KEY') }}"
     api_uri: "https://intersight.com/api/v1"
     validate_certs: true
-    # Override policy_tags via extra-vars for non-interactive use.
-    # Each entry must have a "Key" and a "Value" field.
-    policy_tags: "{{ tags_input | default([]) }}"
 
-  vars_prompt:
-    - name: ntp_policy_name
-      prompt: "Enter the NTP policy name (exact match)"
-      private: false
-
-    - name: tags_raw
-      prompt: >-
-        Enter tags as comma-separated Key=Value pairs
-        (e.g. Env=Prod,Owner=NetOps)
-      private: false
+  pre_tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - ntp_policy_name is defined and ntp_policy_name | length > 0
+          - policy_tags is defined and policy_tags | length > 0
+        fail_msg: >-
+          Required variables not set.
+          Must provide: ntp_policy_name (string) and policy_tags (list).
+      run_once: true
 
   tasks:
 
     # -------------------------------------------------------------------------
-    # 1. Parse tags from the prompt string into a list of dicts
-    #    (skipped when policy_tags was already provided via extra-vars)
-    # -------------------------------------------------------------------------
-    - name: Build tags list from prompt input
-      ansible.builtin.set_fact:
-        policy_tags: >-
-          {{
-            tags_raw.split(',')
-            | map('trim')
-            | select('search', '=')
-            | map('regex_replace', '^([^=]+)=(.*)$', '{"Key": "\1", "Value": "\2"}')
-            | map('from_json')
-            | list
-          }}
-      when: policy_tags | length == 0 and tags_raw is defined and tags_raw | length > 0
-
-    - name: Fail if no tags were provided
-      ansible.builtin.fail:
-        msg: >-
-          No tags were provided. Supply tags via the prompt (Key=Value,...) or
-          via extra-vars: -e 'policy_tags=[{"Key":"K","Value":"V"}]'
-      when: policy_tags | length == 0
-
-    # -------------------------------------------------------------------------
-    # 2. Look up the NTP policy by name
+    # 1. Look up the NTP policy by name
     # -------------------------------------------------------------------------
     - name: Look up NTP policy by name
       cisco.intersight.intersight_rest_api:
@@ -107,6 +85,30 @@
     - name: Display resolved NTP policy
       ansible.builtin.debug:
         msg: "Resolved NTP policy '{{ ntp_policy_name }}' → Moid: {{ ntp_policy_moid }}"
+
+    # -------------------------------------------------------------------------
+    # 2. Parse tags from the prompt string into a list of dicts
+    #    (skipped when policy_tags was already provided via extra-vars)
+    # -------------------------------------------------------------------------
+    - name: Build tags list from prompt input
+      ansible.builtin.set_fact:
+        policy_tags: >-
+          {{
+            tags_raw.split(',')
+            | map('trim')
+            | select('search', '=')
+            | map('regex_replace', '^([^=]+)=(.*)$', '{"Key": "\1", "Value": "\2"}')
+            | map('from_json')
+            | list
+          }}
+      when: policy_tags | length == 0 and tags_raw is defined and tags_raw | length > 0
+
+    - name: Fail if no tags were provided
+      ansible.builtin.fail:
+        msg: >-
+          No tags were provided. Supply tags via the prompt (Key=Value,...) or
+          via extra-vars: -e 'policy_tags=[{"Key":"K","Value":"V"}]'
+      when: policy_tags | length == 0
 
     # -------------------------------------------------------------------------
     # 3. Read existing tags so we can merge rather than replace

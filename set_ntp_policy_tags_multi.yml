@@ -30,27 +30,14 @@
 # Usage (AAP): Pass policy_tags_yaml from job template survey (Textarea field)
 # =============================================================================
 
-- name: Apply tags to multiple Intersight NTP policies
+- name: Prepare parallel NTP policy workers
   hosts: localhost
   connection: local
   gather_facts: false
 
-  module_defaults:
-    cisco.intersight.intersight_rest_api:
-      api_key_id: "{{ api_key_id }}"
-      api_private_key: "{{ api_private_key }}"
-      api_uri: "https://intersight.com/api/v1"
-      validate_certs: true
-
   vars:
-    api_key_id: "{{ lookup('env', 'INTERSIGHT_API_KEY_ID') }}"
-    api_private_key: "{{ lookup('env', 'INTERSIGHT_API_PRIVATE_KEY') }}"
     # Parse YAML input into a list of dicts
     parsed_policies: "{{ policy_tags_yaml | from_yaml | default([]) }}"
-    # Track results across all policy updates
-    policy_results: []
-    failed_policies: []
-    successful_policies: []
 
   pre_tasks:
     - name: Validate policy_tags_yaml was provided
@@ -85,7 +72,7 @@
           ansible.builtin.fail:
             msg: >-
               YAML parsing or validation failed: {{ ansible_failed_result.msg }}
-              
+
               Expected format:
               - policy_name: PolicyA
                 tags:
@@ -95,41 +82,77 @@
                     Value: NetOps
 
   tasks:
-
     - name: Display parsed policies
       ansible.builtin.debug:
-        msg: "Processing {{ parsed_policies | length }} policy/tag entry(ies)…"
+        msg: "Preparing {{ parsed_policies | length }} policy worker host(s) for parallel tag application..."
 
-    # -------------------------------------------------------------------------
-    # Loop: Apply tags to each policy
-    # -------------------------------------------------------------------------
-    - name: Apply tags to each NTP policy
-      ansible.builtin.include_tasks: include_single_policy_task.yml
-      vars:
+    - name: Create one worker host per policy
+      ansible.builtin.add_host:
+        name: "ntp_policy_worker_{{ ansible_loop.index0 }}"
+        groups: ntp_policy_workers
+        ansible_connection: local
         ntp_policy_name: "{{ item.policy_name }}"
         policy_tags: "{{ item.tags }}"
       loop: "{{ parsed_policies }}"
       loop_control:
         label: "{{ item.policy_name }}"
-      register: loop_result
-      ignore_errors: true
 
-    - name: Extract failed policies from loop
+- name: Apply tags in parallel per policy worker
+  hosts: ntp_policy_workers
+  gather_facts: false
+  strategy: free
+
+  module_defaults:
+    cisco.intersight.intersight_rest_api:
+      api_key_id: "{{ lookup('env', 'INTERSIGHT_API_KEY_ID') }}"
+      api_private_key: "{{ lookup('env', 'INTERSIGHT_API_PRIVATE_KEY') }}"
+      api_uri: "https://intersight.com/api/v1"
+      validate_certs: true
+
+  tasks:
+    - name: Apply tags to policy
+      block:
+        - name: Run single-policy tag application tasks
+          ansible.builtin.include_tasks: include_single_policy_task.yml
+
+        - name: Mark worker success
+          ansible.builtin.set_fact:
+            policy_run_failed: false
+
+      rescue:
+        - name: Mark worker failure
+          ansible.builtin.set_fact:
+            policy_run_failed: true
+
+        - name: Show policy failure details
+          ansible.builtin.debug:
+            msg: >-
+              Failed to apply tags to '{{ ntp_policy_name }}':
+              {{ ansible_failed_result.msg | default('Unknown error') }}
+
+- name: Build summary from parallel workers
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    worker_hosts: "{{ groups['ntp_policy_workers'] | default([]) }}"
+    failed_policies: []
+
+  tasks:
+    - name: Extract failed policies from worker results
       ansible.builtin.set_fact:
-        failed_policies: "{{ failed_policies + [item.item.policy_name] }}"
-      loop: "{{ loop_result.results }}"
-      when: item is failed
+        failed_policies: "{{ failed_policies + [hostvars[item].ntp_policy_name] }}"
+      loop: "{{ worker_hosts }}"
+      when: hostvars[item].policy_run_failed | default(false)
       loop_control:
-        label: "{{ item.item.policy_name }}"
+        label: "{{ hostvars[item].ntp_policy_name | default(item) }}"
 
-    # -------------------------------------------------------------------------
-    # Summary
-    # -------------------------------------------------------------------------
     - name: Build final counts
       ansible.builtin.set_fact:
-        summary_total: "{{ parsed_policies | length }}"
+        summary_total: "{{ worker_hosts | length }}"
         summary_failed: "{{ failed_policies | length }}"
-        summary_successful: "{{ (parsed_policies | length) - (failed_policies | length) }}"
+        summary_successful: "{{ (worker_hosts | length) - (failed_policies | length) }}"
 
     - name: Display summary
       ansible.builtin.debug:

@@ -1,0 +1,81 @@
+---
+# =============================================================================
+# Included tasks: include_single_policy_cleanup_task.yml
+#
+# Called from cleanup_ntp_policy_tags_multi.yml in a loop to remove tags from
+# a single policy. Any existing tag whose Key matches policy_tags[].Key will
+# be removed. All other tags are preserved.
+#
+# Expected variables (set by the caller):
+#   ntp_policy_name: "PolicyA"
+#   policy_tags: [{"Key":"Env","Value":"Prod"}]
+#   api_key_id, api_private_key, api_uri, validate_certs (from parent)
+# =============================================================================
+
+- name: Resolve NTP policy by name
+  cisco.intersight.intersight_rest_api:
+    resource_path: /ntp/Policies
+    query_params:
+      $filter: "Name eq '{{ ntp_policy_name }}'"
+    return_list: true
+  register: ntp_lookup
+
+- name: Fail if policy not found
+  ansible.builtin.fail:
+    msg: "NTP policy '{{ ntp_policy_name }}' not found in Intersight."
+  when: (ntp_lookup.api_response | default([])) | length == 0
+
+- name: Use first match if multiple policies found
+  ansible.builtin.set_fact:
+    ntp_policy_moid: "{{ ntp_lookup.api_response[0].Moid }}"
+
+- name: Fetch current policy details to read existing tags
+  cisco.intersight.intersight_rest_api:
+    resource_path: "/ntp/Policies/{{ ntp_policy_moid }}"
+    return_list: false
+  register: ntp_current
+
+- name: Build key list to remove
+  ansible.builtin.set_fact:
+    tag_keys_to_remove: "{{ policy_tags | map(attribute='Key') | list }}"
+
+- name: Build filtered tag list
+  ansible.builtin.set_fact:
+    existing_tags: "{{ ntp_current.api_response.Tags | default([]) }}"
+    filtered_tags: >-
+      {{
+        (ntp_current.api_response.Tags | default([]))
+        | rejectattr('Key', 'in', tag_keys_to_remove)
+        | list
+      }}
+
+- name: Compute removal count
+  ansible.builtin.set_fact:
+    removed_count: "{{ (existing_tags | length) - (filtered_tags | length) }}"
+
+- name: Display tag cleanup details
+  ansible.builtin.debug:
+    msg:
+      - "Policy: {{ ntp_policy_name }}"
+      - "  Existing tags: {{ existing_tags | length }}"
+      - "  Requested remove keys: {{ tag_keys_to_remove | length }}"
+      - "  Removed: {{ removed_count }}"
+      - "  Remaining total: {{ filtered_tags | length }}"
+
+- name: Apply filtered tags to policy
+  cisco.intersight.intersight_rest_api:
+    resource_path: "/ntp/Policies/{{ ntp_policy_moid }}"
+    api_body:
+      Tags: "{{ filtered_tags }}"
+    state: present
+  when: removed_count | int > 0
+  register: patch_result
+
+- name: No matching tags to remove
+  ansible.builtin.debug:
+    msg: "No matching tag keys found on '{{ ntp_policy_name }}'; no update required."
+  when: removed_count | int == 0
+
+- name: Record successful policy
+  ansible.builtin.set_fact:
+    successful_policies: "{{ successful_policies + [ntp_policy_name] }}"

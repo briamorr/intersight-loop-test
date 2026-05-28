@@ -1,7 +1,7 @@
 ---
-# Set tags on one NTP policy by name (merge strategy).
+# Remove tags from one NTP policy by name (key-based cleanup).
 
-- name: Apply tags to a single Intersight NTP policy
+- name: Remove tags from a single Intersight NTP policy
   hosts: localhost
   connection: local
   gather_facts: false
@@ -23,10 +23,11 @@
         that:
           - ntp_policy_name is defined and ntp_policy_name | length > 0
           - policy_tags is defined and policy_tags | length > 0
+          - policy_tags[0].Key is defined
           - resolved_api_key_id | length > 0
           - resolved_api_private_key | length > 0
         fail_msg: >-
-          Required values missing. Provide ntp_policy_name, policy_tags,
+          Required values missing. Provide ntp_policy_name, policy_tags (Key list),
           and credentials (api_key_id/api_private_key or INTERSIGHT_API_* env vars).
 
   tasks:
@@ -40,18 +41,8 @@
 
     - name: Fail if NTP policy not found
       ansible.builtin.fail:
-        msg: >-
-          NTP policy '{{ ntp_policy_name }}' was not found in Intersight.
-          Verify the name and try again.
+        msg: "NTP policy '{{ ntp_policy_name }}' was not found in Intersight."
       when: (ntp_lookup.api_response | default([])) | length == 0
-
-    - name: Warn if multiple NTP policies matched the name
-      ansible.builtin.debug:
-        msg: >-
-          WARNING: {{ ntp_lookup.api_response | length }} policies matched
-          '{{ ntp_policy_name }}'. Using the first result
-          (Moid: {{ ntp_lookup.api_response[0].Moid }}).
-      when: ntp_lookup.api_response | length > 1
 
     - name: Store NTP policy Moid
       ansible.builtin.set_fact:
@@ -63,35 +54,39 @@
         return_list: false
       register: ntp_current
 
-    - name: Build merged tag list
-      # Start with existing tags, then overlay/add any new ones.
-      # If a supplied Key already exists, the new Value wins.
+    - name: Build cleanup tag list
       ansible.builtin.set_fact:
-        merged_tags: >-
+        tag_keys_to_remove: "{{ policy_tags | map(attribute='Key') | list }}"
+        existing_tags: "{{ ntp_current.api_response.Tags | default([]) }}"
+        filtered_tags: >-
           {{
             (ntp_current.api_response.Tags | default([]))
             | rejectattr('Key', 'in', policy_tags | map(attribute='Key') | list)
             | list
-            + policy_tags
           }}
 
-    - name: Display merge summary
+    - name: Compute removal count
+      ansible.builtin.set_fact:
+        removed_count: "{{ (existing_tags | length) - (filtered_tags | length) }}"
+
+    - name: Display cleanup summary
       ansible.builtin.debug:
         msg:
           - "Policy: {{ ntp_policy_name }}"
-          - "Existing tags: {{ ntp_current.api_response.Tags | default([]) | length }}"
-          - "Requested tags: {{ policy_tags | length }}"
-          - "Result tags: {{ merged_tags | length }}"
+          - "Existing tags: {{ existing_tags | length }}"
+          - "Requested remove keys: {{ tag_keys_to_remove | length }}"
+          - "Removed: {{ removed_count }}"
+          - "Remaining tags: {{ filtered_tags | length }}"
 
-    - name: Set merged tags on NTP policy
+    - name: Apply filtered tags to NTP policy
       cisco.intersight.intersight_rest_api:
         resource_path: "/ntp/Policies/{{ ntp_policy_moid }}"
         api_body:
-          Tags: "{{ merged_tags }}"
+          Tags: "{{ filtered_tags }}"
         state: present
-      register: patch_result
+      when: removed_count | int > 0
 
-    - name: Confirm tags applied
+    - name: No matching tags to remove
       ansible.builtin.debug:
-        msg: >-
-          Successfully applied {{ policy_tags | length }} tag(s) to '{{ ntp_policy_name }}'.
+        msg: "No matching tag keys found on '{{ ntp_policy_name }}'; no update required."
+      when: removed_count | int == 0

@@ -1,124 +1,153 @@
 ---
-# =============================================================================
-# Playbook: set_ntp_policy_tags_multi.yml
+# Wrapper for multi-policy tag operations.
 #
-# Wrapper for applying tags to multiple Intersight NTP policies (with different
-# tags per policy). Parses a YAML input, validates structure, and calls
-# set_ntp_policy_tags.yml for each policy entry.
-#
-# Expected variables (from AAP survey or -e):
-#   policy_tags_yaml: |
-#     - policy_name: PolicyA
-#       tags:
-#         - Key: Env
-#           Value: Prod
-#         - Key: Owner
-#           Value: NetOps
-#     - policy_name: PolicyB
-#       tags:
-#         - Key: Env
-#           Value: Dev
-#
-# Authentication – set the following environment variables before running:
-#   export INTERSIGHT_API_KEY_ID="<your-key-id>"
-#   export INTERSIGHT_API_PRIVATE_KEY="<path-to-your-pem-key-file>"
-#
-# Usage (CLI):
-#   ansible-playbook -i inventory set_ntp_policy_tags_multi.yml \
-#     -e 'policy_tags_yaml=...'
-#
-# Usage (AAP): Pass policy_tags_yaml from job template survey (Textarea field)
-# =============================================================================
+# Inputs:
+# - policy_tags_yaml: YAML list of policies and tags
+# - tag_operation: set | cleanup (default: set)
+# - api_key_id / api_private_key: provided by AAP credential
 
-- name: Prepare parallel NTP policy workers
+- name: Prepare policy workers
   hosts: localhost
   connection: local
   gather_facts: false
 
   vars:
-    # Parse YAML input into a list of dicts
-    parsed_policies: "{{ policy_tags_yaml | from_yaml | default([]) }}"
-
-  pre_tasks:
-    - name: Validate policy_tags_yaml was provided
-      ansible.builtin.assert:
-        that:
-          - policy_tags_yaml is defined
-          - policy_tags_yaml | length > 0
-        fail_msg: "policy_tags_yaml is required. Provide YAML with policy_name and tags list."
-
-    - name: Parse and validate YAML structure
-      block:
-        - name: Parse YAML input
-          ansible.builtin.set_fact:
-            parsed_policies: "{{ policy_tags_yaml | from_yaml }}"
-
-        - name: Validate each policy entry
-          ansible.builtin.assert:
-            that:
-              - item.policy_name is defined and item.policy_name | length > 0
-              - item.tags is defined and item.tags | length > 0
-              - item.tags[0].Key is defined
-              - item.tags[0].Value is defined
-            fail_msg: >-
-              Invalid policy entry: {{ item }}
-              each must have: policy_name (string) and tags (list of {Key, Value})
-          loop: "{{ parsed_policies }}"
-          loop_control:
-            label: "{{ item.policy_name | default('UNKNOWN') }}"
-
-      rescue:
-        - name: Fail with YAML parsing error
-          ansible.builtin.fail:
-            msg: >-
-              YAML parsing or validation failed: {{ ansible_failed_result.msg }}
-
-              Expected format:
-              - policy_name: PolicyA
-                tags:
-                  - Key: Env
-                    Value: Prod
-                  - Key: Owner
-                    Value: NetOps
+    worker_group_name: ntp_policy_workers
+    worker_host_prefix: ntp_policy_worker
+    tag_operation: "{{ tag_operation | default('set') }}"
 
   tasks:
-    - name: Display parsed policies
+    - name: Validate required wrapper inputs
+      ansible.builtin.assert:
+        that:
+          - tag_operation in ['set', 'cleanup']
+          - policy_tags_yaml is defined
+          - policy_tags_yaml | length > 0
+          - api_key_id is defined
+          - api_key_id | length > 0
+          - api_private_key is defined
+          - api_private_key | length > 0
+        fail_msg: >-
+          Required inputs missing. Expected: policy_tags_yaml, tag_operation (set|cleanup),
+          api_key_id, and api_private_key.
+
+    - name: Parse policy_tags_yaml
+      ansible.builtin.set_fact:
+        parsed_policies: "{{ policy_tags_yaml | from_yaml }}"
+
+    - name: Validate each policy entry
+      ansible.builtin.assert:
+        that:
+          - item.policy_name is defined and item.policy_name | length > 0
+          - item.tags is defined and item.tags | length > 0
+          - item.tags[0].Key is defined
+          - tag_operation == 'cleanup' or item.tags[0].Value is defined
+        fail_msg: >-
+          Invalid policy entry: {{ item }}
+          Expected policy_name and tags; for set, each tag needs Key and Value.
+      loop: "{{ parsed_policies }}"
+      loop_control:
+        label: "{{ item.policy_name | default('UNKNOWN') }}"
+
+    - name: Display operation plan
       ansible.builtin.debug:
-        msg: "Preparing {{ parsed_policies | length }} policy worker host(s) for parallel tag application..."
+        msg: >-
+          Preparing {{ parsed_policies | length }} worker(s) for
+          '{{ tag_operation }}' operation.
 
     - name: Create one worker host per policy
       ansible.builtin.add_host:
-        name: "ntp_policy_worker_{{ policy_index }}"
-        groups: ntp_policy_workers
+        name: "{{ worker_host_prefix }}_{{ worker_index }}"
+        groups: "{{ worker_group_name }}"
         ansible_connection: local
         ntp_policy_name: "{{ item.policy_name }}"
         policy_tags: "{{ item.tags }}"
       loop: "{{ parsed_policies }}"
       loop_control:
-        index_var: policy_index
+        index_var: worker_index
         label: "{{ item.policy_name }}"
 
-- name: Apply tags in parallel per policy worker
+- name: Run operation in parallel per policy worker
   hosts: ntp_policy_workers
   gather_facts: false
   strategy: free
 
+  vars:
+    tag_operation: "{{ hostvars['localhost'].tag_operation }}"
+
   module_defaults:
     cisco.intersight.intersight_rest_api:
-      api_key_id: " {{ api_key_id }}"
-      api_private_key: " {{ api_private_key }}"
+      api_key_id: "{{ api_key_id }}"
+      api_private_key: "{{ api_private_key }}"
       api_uri: "https://intersight.com/api/v1"
       validate_certs: true
 
-  vars:
-    api_key_id: "{{ api_key_id }}"
-    api_private_key: "{{ api_private_key }}"
-
   tasks:
-    - name: Apply tags to policy
+    - name: Process one policy
       block:
-        - name: Run single-policy tag application tasks
-          ansible.builtin.include_tasks: include_single_policy_task.yml
+        - name: Resolve NTP policy by name
+          cisco.intersight.intersight_rest_api:
+            resource_path: /ntp/Policies
+            query_params:
+              $filter: "Name eq '{{ ntp_policy_name }}'"
+            return_list: true
+          register: ntp_lookup
+
+        - name: Fail if policy not found
+          ansible.builtin.fail:
+            msg: "NTP policy '{{ ntp_policy_name }}' not found in Intersight."
+          when: (ntp_lookup.api_response | default([])) | length == 0
+
+        - name: Store selected policy Moid
+          ansible.builtin.set_fact:
+            ntp_policy_moid: "{{ ntp_lookup.api_response[0].Moid }}"
+
+        - name: Fetch current policy details
+          cisco.intersight.intersight_rest_api:
+            resource_path: "/ntp/Policies/{{ ntp_policy_moid }}"
+            return_list: false
+          register: ntp_current
+
+        - name: Build set-operation merged tags
+          ansible.builtin.set_fact:
+            tags_to_apply: >-
+              {{
+                (ntp_current.api_response.Tags | default([]))
+                | rejectattr('Key', 'in', policy_tags | map(attribute='Key') | list)
+                | list
+                + policy_tags
+              }}
+          when: tag_operation == 'set'
+
+        - name: Build cleanup-operation filtered tags
+          ansible.builtin.set_fact:
+            tag_keys_to_remove: "{{ policy_tags | map(attribute='Key') | list }}"
+            existing_tags: "{{ ntp_current.api_response.Tags | default([]) }}"
+            tags_to_apply: >-
+              {{
+                (ntp_current.api_response.Tags | default([]))
+                | rejectattr('Key', 'in', policy_tags | map(attribute='Key') | list)
+                | list
+              }}
+          when: tag_operation == 'cleanup'
+
+        - name: Calculate removal count for cleanup
+          ansible.builtin.set_fact:
+            removed_count: "{{ (existing_tags | length) - (tags_to_apply | length) }}"
+          when: tag_operation == 'cleanup'
+
+        - name: Apply tags to policy
+          cisco.intersight.intersight_rest_api:
+            resource_path: "/ntp/Policies/{{ ntp_policy_moid }}"
+            api_body:
+              Tags: "{{ tags_to_apply }}"
+            state: present
+          when: tag_operation == 'set' or (removed_count | default(0) | int > 0)
+
+        - name: No-op message for cleanup when nothing matched
+          ansible.builtin.debug:
+            msg: "No matching tag keys found on '{{ ntp_policy_name }}'; no update required."
+          when: tag_operation == 'cleanup' and (removed_count | int == 0)
 
         - name: Mark worker success
           ansible.builtin.set_fact:
@@ -129,10 +158,10 @@
           ansible.builtin.set_fact:
             policy_run_failed: true
 
-        - name: Show policy failure details
+        - name: Show worker failure details
           ansible.builtin.debug:
             msg: >-
-              Failed to apply tags to '{{ ntp_policy_name }}':
+              Failed to process '{{ ntp_policy_name }}' (operation: {{ tag_operation }}):
               {{ ansible_failed_result.msg | default('Unknown error') }}
 
 - name: Build summary from parallel workers
@@ -163,25 +192,25 @@
       ansible.builtin.debug:
         msg:
           - ""
-          - "===== Tag Application Summary ====="
+          - "===== Policy Tag Operation Summary ====="
+          - "Operation:        {{ hostvars['localhost'].tag_operation }}"
           - "Total policies:    {{ summary_total }}"
           - "Successful:        {{ summary_successful }}"
           - "Failed:            {{ summary_failed }}"
           - ""
-      run_once: true
 
     - name: Show failed policies
       ansible.builtin.debug:
-        msg: "✗ {{ item }}"
+        msg: "X {{ item }}"
       loop: "{{ failed_policies }}"
       when: failed_policies | length > 0
 
     - name: Fail overall if any policy failed
       ansible.builtin.fail:
-        msg: "{{ failed_policies | length }} policy tag application(s) failed."
+        msg: "{{ failed_policies | length }} policy operation(s) failed."
       when: failed_policies | length > 0
 
     - name: Success message
       ansible.builtin.debug:
-        msg: "✓ All {{ summary_total }} policy tag applications completed successfully!"
+        msg: "All {{ summary_total }} policy operations completed successfully!"
       when: failed_policies | length == 0

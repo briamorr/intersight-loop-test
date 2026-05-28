@@ -12,57 +12,65 @@
 #   api_key_id, api_private_key, api_uri, validate_certs (from parent)
 # =============================================================================
 
-- name: Resolve NTP policy by name
-  cisco.intersight.intersight_rest_api:
-    resource_path: /ntp/Policies
-    query_params:
-      $filter: "Name eq '{{ ntp_policy_name }}'"
-    return_list: true
-  register: ntp_lookup
+- name: Apply tags workflow for one policy
+  module_defaults:
+    cisco.intersight.intersight_rest_api:
+      api_key_id: "{{ api_key_id }}"
+      api_private_key: "{{ api_private_key }}"
+      api_uri: "https://intersight.com/api/v1"
+      validate_certs: true
+  block:
+    - name: Resolve NTP policy by name
+      cisco.intersight.intersight_rest_api:
+        resource_path: /ntp/Policies
+        query_params:
+          $filter: "Name eq '{{ ntp_policy_name }}'"
+        return_list: true
+      register: ntp_lookup
 
-- name: Fail if policy not found
-  ansible.builtin.fail:
-    msg: "NTP policy '{{ ntp_policy_name }}' not found in Intersight."
-  when: (ntp_lookup.api_response | default([])) | length == 0
+    - name: Fail if policy not found
+      ansible.builtin.fail:
+        msg: "NTP policy '{{ ntp_policy_name }}' not found in Intersight."
+      when: (ntp_lookup.api_response | default([])) | length == 0
 
-- name: Use first match if multiple policies found
-  ansible.builtin.set_fact:
-    ntp_policy_moid: "{{ ntp_lookup.api_response[0].Moid }}"
+    - name: Use first match if multiple policies found
+      ansible.builtin.set_fact:
+        ntp_policy_moid: "{{ ntp_lookup.api_response[0].Moid }}"
 
-- name: Fetch current policy details to read existing tags
-  cisco.intersight.intersight_rest_api:
-    resource_path: "/ntp/Policies/{{ ntp_policy_moid }}"
-    return_list: false
-  register: ntp_current
+    - name: Fetch current policy details to read existing tags
+      cisco.intersight.intersight_rest_api:
+        resource_path: "/ntp/Policies/{{ ntp_policy_moid }}"
+        return_list: false
+      register: ntp_current
 
-- name: Build merged tag list
-  # Existing tags whose Key is not in policy_tags are kept.
-  # Supplied tags (policy_tags) override or add new keys.
-  ansible.builtin.set_fact:
-    merged_tags: >-
-      {{
-        (ntp_current.api_response.Tags | default([]))
-        | rejectattr('Key', 'in', policy_tags | map(attribute='Key') | list)
-        | list
-        + policy_tags
-      }}
+    - name: Build merged tag list
+      # Existing tags whose Key is not in policy_tags are kept.
+      # Supplied tags (policy_tags) override or add new keys.
+      ansible.builtin.set_fact:
+        merged_tags: >-
+          {{
+            (ntp_current.api_response.Tags | default([]))
+            | rejectattr('Key', 'in', policy_tags | map(attribute='Key') | list)
+            | list
+            + policy_tags
+          }}
 
-- name: Display tag merge details
-  ansible.builtin.debug:
-    msg:
-      - "Policy: {{ ntp_policy_name }}"
-      - "  Existing tags: {{ ntp_current.api_response.Tags | default([]) | length }}"
-      - "  New/updated:   {{ policy_tags | length }}"
-      - "  Merged total:  {{ merged_tags | length }}"
+    - name: Display tag merge details
+      ansible.builtin.debug:
+        msg:
+          - "Policy: {{ ntp_policy_name }}"
+          - "  Existing tags: {{ ntp_current.api_response.Tags | default([]) | length }}"
+          - "  New/updated:   {{ policy_tags | length }}"
+          - "  Merged total:  {{ merged_tags | length }}"
 
-- name: Apply merged tags to policy
-  cisco.intersight.intersight_rest_api:
-    resource_path: "/ntp/Policies/{{ ntp_policy_moid }}"
-    api_body:
-      Tags: "{{ merged_tags }}"
-    state: present
-  register: patch_result
+    - name: Apply merged tags to policy
+      cisco.intersight.intersight_rest_api:
+        resource_path: "/ntp/Policies/{{ ntp_policy_moid }}"
+        api_body:
+          Tags: "{{ merged_tags }}"
+        state: present
+      register: patch_result
 
-- name: Record successful policy
-  ansible.builtin.set_fact:
-    successful_policies: "{{ (successful_policies | default([])) + [ntp_policy_name] }}"
+    - name: Record successful policy
+      ansible.builtin.set_fact:
+        successful_policies: "{{ (successful_policies | default([])) + [ntp_policy_name] }}"

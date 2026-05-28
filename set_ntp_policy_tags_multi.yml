@@ -105,10 +105,14 @@
 
   module_defaults:
     cisco.intersight.intersight_rest_api:
-      api_key_id: "{{ lookup('env', 'INTERSIGHT_API_KEY_ID') }}"
-      api_private_key: "{{ lookup('env', 'INTERSIGHT_API_PRIVATE_KEY') }}"
+      api_key_id: " {{ api_key_id }}"
+      api_private_key: " {{ api_private_key }}"
       api_uri: "https://intersight.com/api/v1"
       validate_certs: true
+
+  vars:
+    api_key_id: "{{ api_key_id }}"
+    api_private_key: "{{ api_private_key }}"
 
   tasks:
     - name: Apply tags to policy

@@ -85,13 +85,14 @@
 
     - name: Create one cleanup worker host per policy
       ansible.builtin.add_host:
-        name: "ntp_cleanup_worker_{{ ansible_loop.index0 }}"
+        name: "ntp_cleanup_worker_{{ cleanup_index }}"
         groups: ntp_cleanup_workers
         ansible_connection: local
         ntp_policy_name: "{{ item.policy_name }}"
         policy_tags: "{{ item.tags }}"
       loop: "{{ parsed_policies }}"
       loop_control:
+        index_var: cleanup_index
         label: "{{ item.policy_name }}"
 
 - name: Cleanup tags in parallel per policy worker

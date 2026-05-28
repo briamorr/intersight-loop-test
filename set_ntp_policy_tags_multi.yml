@@ -88,13 +88,14 @@
 
     - name: Create one worker host per policy
       ansible.builtin.add_host:
-        name: "ntp_policy_worker_{{ ansible_loop.index0 }}"
+        name: "ntp_policy_worker_{{ policy_index }}"
         groups: ntp_policy_workers
         ansible_connection: local
         ntp_policy_name: "{{ item.policy_name }}"
         policy_tags: "{{ item.tags }}"
       loop: "{{ parsed_policies }}"
       loop_control:
+        index_var: policy_index
         label: "{{ item.policy_name }}"
 
 - name: Apply tags in parallel per policy worker

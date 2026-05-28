@@ -129,7 +129,7 @@
       ansible.builtin.set_fact:
         summary_total: "{{ parsed_policies | length }}"
         summary_failed: "{{ failed_policies | length }}"
-        summary_successful: "{{ summary_total | int - summary_failed | int }}"
+        summary_successful: "{{ (parsed_policies | length) - (failed_policies | length) }}"
 
     - name: Display summary
       ansible.builtin.debug:

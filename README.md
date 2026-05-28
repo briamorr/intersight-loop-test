@@ -2,148 +2,132 @@
 
 ## Architecture
 
-Two playbooks working together for flexible tag management:
+This repository now uses a 3-playbook model:
 
-### 1. `set_ntp_policy_tags.yml` (Single Policy)
-Core playbook that applies tags to **one** NTP policy. 
+1. `set_ntp_policy_tags_multi.yml`
+- Unified multi-policy wrapper.
+- Supports both operations:
+  - `tag_operation: set`
+  - `tag_operation: cleanup`
+- Input is `policy_tags_yaml` (YAML list from AAP survey or CLI).
+- Runs one worker per policy and processes workers in parallel.
 
-**Standalone usage (CLI):**
-```bash
-ansible-playbook -i inventory set_ntp_policy_tags.yml \
-  -e "ntp_policy_name=MyPolicy" \
-  -e 'policy_tags=[{"Key":"Env","Value":"Prod"},{"Key":"Owner","Value":"NetOps"}]'
-```
+2. `set_ntp_policy_tags.yml`
+- Single-policy tag set/update playbook.
+- Merges requested tags with existing tags.
 
-**Expected variables:**
-- `ntp_policy_name`: Exact name of the policy
-- `policy_tags`: List of tag dictionaries with `Key` and `Value`
+3. `cleanup_ntp_policy_tags.yml`
+- Single-policy tag cleanup playbook.
+- Removes existing tags by matching requested `Key` values.
 
-**What it does:**
-1. Looks up policy Moid by name
-2. Reads existing tags on the policy
-3. Merges supplied tags with existing ones (supplied keys override, new keys are added)
-4. PATCHes the policy with merged tags
+## AAP Usage (Recommended)
 
----
+Use `set_ntp_policy_tags_multi.yml` in AAP job/workflow templates for both set and cleanup.
 
-### 2. `set_ntp_policy_tags_multi.yml` (Multiple Policies - AAP Wrapper)
-Wrapper that handles **multiple policies** with **different tags per policy**.
+### Required variables
 
-**AAP Job Template setup:**
-Create a survey with this field:
-- **Label:** Policy Tags (YAML)
-- **Variable:** `policy_tags_yaml`
-- **Type:** Textarea
-- **Help text:** Enter YAML with policy_name and tags list
+- `policy_tags_yaml` (survey textarea)
+- `tag_operation` (`set` or `cleanup`)
+- `api_key_id` and `api_private_key` (from AAP credential injection)
 
-**Example survey input:**
+### Survey example for set
+
 ```yaml
 - policy_name: NTP-Production
   tags:
     - Key: Environment
       Value: Production
-    - Key: CostCenter
-      Value: IT-001
     - Key: Owner
-      Value: netops-team
-- policy_name: NTP-Staging
-  tags:
-    - Key: Environment
-      Value: Staging
-    - Key: CostCenter
-      Value: IT-002
+      Value: NetOps
 - policy_name: NTP-Lab
   tags:
     - Key: Environment
       Value: Lab
 ```
 
-**CLI usage (if needed):**
+Run with:
+
+```yaml
+tag_operation: set
+```
+
+### Survey example for cleanup
+
+```yaml
+- policy_name: NTP-Production
+  tags:
+    - Key: Environment
+    - Key: Owner
+- policy_name: NTP-Lab
+  tags:
+    - Key: Environment
+```
+
+Run with:
+
+```yaml
+tag_operation: cleanup
+```
+
+## CLI Examples
+
+### Multi-policy set
+
 ```bash
-ansible-playbook -i inventory set_ntp_policy_tags_multi.yml <<EOF
-policy_tags_yaml: |
-  - policy_name: NTP-Production
-    tags:
-      - Key: Env
-        Value: Prod
-  - policy_name: NTP-Lab
-    tags:
-      - Key: Env
-        Value: Lab
-EOF
+ansible-playbook -i inventory set_ntp_policy_tags_multi.yml \
+  -e "tag_operation=set" \
+  -e "api_key_id=${INTERSIGHT_API_KEY_ID}" \
+  -e "api_private_key=${INTERSIGHT_API_PRIVATE_KEY}" \
+  -e 'policy_tags_yaml=[{"policy_name":"NTP-Prod","tags":[{"Key":"Env","Value":"Prod"}]}]'
 ```
 
-**What it does:**
-1. Parses the YAML input
-2. Validates structure (ensures each entry has policy_name and tags)
-3. Loops through each policy/tag combination
-4. For each, includes `include_single_policy_task.yml` to apply tags
-5. Tracks successes/failures
-6. Displays summary with pass/fail counts
+### Multi-policy cleanup
 
----
-
-### 3. `include_single_policy_task.yml` (Reusable Tasks)
-Helper file containing the core tagging logic, suitable for inclusion in loops.
-
-**Called by:** `set_ntp_policy_tags_multi.yml` (via `include_tasks` in a loop)
-
----
-
-## AAP Job Template Configuration
-
-**Job Template Name:** `Tag NTP Policies`
-
-| Setting | Value |
-|---------|-------|
-| Playbook | `set_ntp_policy_tags_multi.yml` |
-| Inventory | (your Intersight inventory) |
-| Credentials | Custom Credential (Intersight API Key) |
-| Enable privilege escalation | Off |
-| Prompt on launch | ✓ Survey enabled |
-
-**Survey Configuration:**
-1. **Question 1: Policy Tags (YAML)**
-   - Variable: `policy_tags_yaml`
-   - Type: Textarea
-   - Required: Yes
-   - Help text: Paste YAML with policy definitions
-
-**Credentials:**
-The Custom Credential type should inject:
-- `INTERSIGHT_API_KEY_ID` (env var)
-- `INTERSIGHT_API_PRIVATE_KEY` (env var, path to PEM file)
-
----
-
-## Tag Merging Logic
-
-Both playbooks merge tags intelligently:
-
-**Example:**
-```
-Policy currently has:  [{"Key":"Owner","Value":"Old","Key":"Retention","Value":"30days"}]
-You supply:            [{"Key":"Owner","Value":"New"},{"Key":"CostCenter","Value":"IT-001"}]
-Result:               [{"Key":"Retention","Value":"30days"},{"Key":"Owner","Value":"New"},{"Key":"CostCenter","Value":"IT-001"}]
-```
-
-- Existing tags with Keys **not in** your input are preserved
-- Supplied Keys **override** existing values
-- New Keys are **added**
-
----
-
-## Error Handling
-
-- **Single playbook** (`set_ntp_policy_tags.yml`): Fails immediately if policy not found or tagging fails
-- **Multi playbook** (`set_ntp_policy_tags_multi.yml`): Continues processing all policies even if one fails, then displays summary and fails the job if any errors occurred
-
----
-
-## Authentication
-
-Both playbooks read from environment variables (set via AAP Credential):
 ```bash
-export INTERSIGHT_API_KEY_ID="your-api-key-id"
-export INTERSIGHT_API_PRIVATE_KEY="/path/to/intersight-key.pem"
+ansible-playbook -i inventory set_ntp_policy_tags_multi.yml \
+  -e "tag_operation=cleanup" \
+  -e "api_key_id=${INTERSIGHT_API_KEY_ID}" \
+  -e "api_private_key=${INTERSIGHT_API_PRIVATE_KEY}" \
+  -e 'policy_tags_yaml=[{"policy_name":"NTP-Prod","tags":[{"Key":"Env"}]}]'
 ```
+
+### Single-policy set
+
+```bash
+ansible-playbook -i inventory set_ntp_policy_tags.yml \
+  -e "ntp_policy_name=NTP-Prod" \
+  -e 'policy_tags=[{"Key":"Env","Value":"Prod"}]' \
+  -e "api_key_id=${INTERSIGHT_API_KEY_ID}" \
+  -e "api_private_key=${INTERSIGHT_API_PRIVATE_KEY}"
+```
+
+### Single-policy cleanup
+
+```bash
+ansible-playbook -i inventory cleanup_ntp_policy_tags.yml \
+  -e "ntp_policy_name=NTP-Prod" \
+  -e 'policy_tags=[{"Key":"Env"}]' \
+  -e "api_key_id=${INTERSIGHT_API_KEY_ID}" \
+  -e "api_private_key=${INTERSIGHT_API_PRIVATE_KEY}"
+```
+
+## Behavior Summary
+
+- `set` operation:
+  - Preserves existing tags not in the incoming key set.
+  - Overwrites values for matching keys.
+  - Adds new keys.
+
+- `cleanup` operation:
+  - Removes existing tags whose `Key` is listed in input.
+  - Leaves all other tags unchanged.
+
+- Multi wrapper (`set_ntp_policy_tags_multi.yml`):
+  - Continues processing other policies if one fails.
+  - Shows success/failure summary.
+  - Fails overall run if any policy failed.
+
+## Notes
+
+- `cleanup_ntp_policy_tags_multi.yml` no longer exists after refactor.
+- Use `set_ntp_policy_tags_multi.yml` + `tag_operation=cleanup` for multi-policy cleanup.

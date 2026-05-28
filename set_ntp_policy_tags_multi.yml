@@ -14,13 +14,13 @@
   vars:
     worker_group_name: ntp_policy_workers
     worker_host_prefix: ntp_policy_worker
-    tag_operation: "{{ tag_operation | default('set') }}"
+    requested_tag_operation: "{{ tag_operation | default('set') }}"
 
   tasks:
     - name: Validate required wrapper inputs
       ansible.builtin.assert:
         that:
-          - tag_operation in ['set', 'cleanup']
+          - requested_tag_operation in ['set', 'cleanup']
           - policy_tags_yaml is defined
           - policy_tags_yaml | length > 0
           - api_key_id is defined
@@ -41,7 +41,7 @@
           - item.policy_name is defined and item.policy_name | length > 0
           - item.tags is defined and item.tags | length > 0
           - item.tags[0].Key is defined
-          - tag_operation == 'cleanup' or item.tags[0].Value is defined
+          - requested_tag_operation == 'cleanup' or item.tags[0].Value is defined
         fail_msg: >-
           Invalid policy entry: {{ item }}
           Expected policy_name and tags; for set, each tag needs Key and Value.
@@ -53,7 +53,7 @@
       ansible.builtin.debug:
         msg: >-
           Preparing {{ parsed_policies | length }} worker(s) for
-          '{{ tag_operation }}' operation.
+          '{{ requested_tag_operation }}' operation.
 
     - name: Create one worker host per policy
       ansible.builtin.add_host:
@@ -73,7 +73,7 @@
   strategy: free
 
   vars:
-    tag_operation: "{{ hostvars['localhost'].tag_operation }}"
+    tag_operation: "{{ hostvars['localhost'].requested_tag_operation }}"
 
   module_defaults:
     cisco.intersight.intersight_rest_api:
@@ -193,7 +193,7 @@
         msg:
           - ""
           - "===== Policy Tag Operation Summary ====="
-          - "Operation:        {{ hostvars['localhost'].tag_operation }}"
+          - "Operation:        {{ hostvars['localhost'].requested_tag_operation }}"
           - "Total policies:    {{ summary_total }}"
           - "Successful:        {{ summary_successful }}"
           - "Failed:            {{ summary_failed }}"

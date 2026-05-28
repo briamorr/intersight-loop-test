@@ -78,4 +78,4 @@
 
 - name: Record successful policy
   ansible.builtin.set_fact:
-    successful_policies: "{{ successful_policies + [ntp_policy_name] }}"
+    successful_policies: "{{ (successful_policies | default([])) + [ntp_policy_name] }}"
